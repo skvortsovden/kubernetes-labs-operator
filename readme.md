@@ -70,7 +70,7 @@ You can run the operator directly on your machine, connected to a Minikube clust
           namespace: default
         spec:
           containers:
-          - name: busybox
+          - name: busybox-lab
             image: busybox
             command: ["sleep", "3600"]
       expected: |
