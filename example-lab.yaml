@@ -1,0 +1,27 @@
+apiVersion: training.dev/v1
+kind: Lab
+metadata:
+  name: example-lab
+spec:
+  given: |
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: busybox
+      namespace: default
+    spec:
+      containers:
+      - name: busybox-lab
+        image: busybox
+        command: ["sleep", "3600"]
+  expected: |
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: busybox
+      namespace: default
+    spec:
+      containers:
+      - name: busybox
+        image: busybox
+        command: ["sleep", "3600"]
