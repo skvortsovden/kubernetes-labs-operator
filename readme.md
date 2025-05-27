@@ -96,6 +96,37 @@ You can run the operator directly on your machine, connected to a Minikube clust
 
 ## How it works
 
+```mermaid
+sequenceDiagram
+    participant User
+    participant Kubernetes
+    participant Operator
+
+    User->>Kubernetes: Create Lab CR (kubectl apply)
+    Kubernetes->>Operator: Triggers @on.create handler
+
+    Operator->>Operator: Parse 'given' or 'givenFile'
+    Operator->>Operator: Create resources (apply_manifest)
+    Operator->>Operator: Validate cluster state (validate_lab)
+    Operator->>Kubernetes: Update Lab status (ready, message, error)
+    Operator->>Kubernetes: Emit "Initializing" event (if needed)
+
+    Note over Operator: Periodically or on Lab update
+
+    Kubernetes->>Operator: Triggers @on.update or @timer handler
+    Operator->>Operator: Parse 'expected', 'expectedFile', or 'expectedRef'
+    Operator->>Operator: Validate cluster state (compare_resources)
+    Operator->>Kubernetes: Update Lab status (ready, message, error)
+    Operator->>Kubernetes: Emit "LabFixed" or "LabNotFixed" event (on status change)
+
+    User->>Kubernetes: Delete Lab CR (kubectl delete)
+    Kubernetes->>Operator: Triggers @on.delete handler
+    Operator->>Operator: Parse manifests from 'given' and 'expected'
+    Operator->>Kubernetes: Delete resources (Pod, ConfigMap, Secret, etc.)
+    Operator->>Kubernetes: Wait for resources to be deleted
+    Operator->>Kubernetes: Delete expected Secret (if exists)
+```
+
 * Applies resources in `spec.given` to the cluster.
 * Converts `spec.expected` to a Secret and patches the Lab to use `expectedRef` (for security and consistency).
 * Verifies the live cluster state matches the expected manifests (using a subset/deep comparison, ignoring extra fields set by Kubernetes).
