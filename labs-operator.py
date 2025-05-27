@@ -68,11 +68,9 @@ async def apply_manifest(manifest, namespace):
         if kind == "Pod":
             try:
                 existing = api.read_namespaced_pod(name, ns).to_dict()
-                # Use compare_resources to decide if update is needed
                 if not compare_resources(manifest, existing):
                     logging.info(f"Pod '{name}' spec changed, deleting for re-creation.")
                     api.delete_namespaced_pod(name, ns)
-                    # Wait for pod deletion to complete
                     for _ in range(30):
                         await asyncio.sleep(1)
                         try:
@@ -94,33 +92,12 @@ async def apply_manifest(manifest, namespace):
                     api.create_namespaced_pod(ns, manifest)
                 else:
                     raise
-        elif kind == "ConfigMap":
-            try:
-                api.read_namespaced_config_map(name, ns)
-                logging.info(f"ConfigMap '{name}' exists in '{ns}', replacing.")
-                api.replace_namespaced_config_map(name, ns, manifest)
-            except ApiException as e:
-                if e.status == 404:
-                    logging.info(f"ConfigMap '{name}' does not exist, creating new ConfigMap.")
-                    api.create_namespaced_config_map(ns, manifest)
-                else:
-                    raise
-        elif kind == "Secret":
-            try:
-                api.read_namespaced_secret(name, ns)
-                logging.info(f"Secret '{name}' exists in '{ns}', replacing.")
-                api.replace_namespaced_secret(name, ns, manifest)
-            except ApiException as e:
-                if e.status == 404:
-                    logging.info(f"Secret '{name}' does not exist, creating new Secret.")
-                    api.create_namespaced_secret(ns, manifest)
-                else:
-                    raise
         else:
+            # For all other resource kinds, use the generic utility
             logging.info(f"Applying resource kind '{kind}' with generic utility.")
             create_from_dict(client.ApiClient(), manifest, namespace=namespace)
     except Exception as e:
-        logging.error(f"Failed to apply {kind} '{name}' in '{ns}': {e}")
+        logging.error(f"Failed to apply {kind} '{name}' in '{ns}': {e}", exc_info=True)
         raise
 
     await asyncio.sleep(0)
