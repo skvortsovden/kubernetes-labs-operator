@@ -5,6 +5,8 @@ from kubernetes.client.rest import ApiException
 import base64
 import asyncio
 from kubernetes.utils import create_from_dict
+import os
+import logging
 
 # Load Kubernetes config (in-cluster or local)
 try:
@@ -55,61 +57,70 @@ def load_manifests(yaml_str):
     return [doc for doc in docs if doc is not None]
 
 async def apply_manifest(manifest, namespace):
-    """
-    Apply a manifest to the cluster. Supports Pod, ConfigMap, Secret.
-    For Pods, deletes and recreates if already exists (immutable fields).
-    """
     kind = manifest.get("kind")
     metadata = manifest.setdefault("metadata", {})
     name = metadata.get("name")
     ns = metadata.setdefault("namespace", namespace)
     api = client.CoreV1Api()
 
+    logging.info(f"Applying {kind} '{name}' in namespace '{ns}'")
     try:
         if kind == "Pod":
             try:
-                api.read_namespaced_pod(name, ns)
-                api.delete_namespaced_pod(name, ns)
-                # Wait for pod deletion to complete
-                for _ in range(30):
-                    await asyncio.sleep(1)
-                    try:
-                        api.read_namespaced_pod(name, ns)
-                    except ApiException as e:
-                        if e.status == 404:
-                            api.create_namespaced_pod(ns, manifest)
-                            break
-                        else:
-                            raise
+                existing = api.read_namespaced_pod(name, ns).to_dict()
+                # Use compare_resources to decide if update is needed
+                if not compare_resources(manifest, existing):
+                    logging.info(f"Pod '{name}' spec changed, deleting for re-creation.")
+                    api.delete_namespaced_pod(name, ns)
+                    # Wait for pod deletion to complete
+                    for _ in range(30):
+                        await asyncio.sleep(1)
+                        try:
+                            api.read_namespaced_pod(name, ns)
+                        except ApiException as e:
+                            if e.status == 404:
+                                logging.info(f"Pod '{name}' deleted, creating new Pod.")
+                                api.create_namespaced_pod(ns, manifest)
+                                break
+                            else:
+                                raise
+                    else:
+                        raise Exception(f"Pod {name} not deleted after waiting")
                 else:
-                    raise Exception(f"Pod {name} not deleted after waiting")
+                    logging.info(f"Pod '{name}' already matches manifest, skipping.")
             except ApiException as e:
                 if e.status == 404:
+                    logging.info(f"Pod '{name}' does not exist, creating new Pod.")
                     api.create_namespaced_pod(ns, manifest)
                 else:
                     raise
         elif kind == "ConfigMap":
             try:
                 api.read_namespaced_config_map(name, ns)
+                logging.info(f"ConfigMap '{name}' exists in '{ns}', replacing.")
                 api.replace_namespaced_config_map(name, ns, manifest)
             except ApiException as e:
                 if e.status == 404:
+                    logging.info(f"ConfigMap '{name}' does not exist, creating new ConfigMap.")
                     api.create_namespaced_config_map(ns, manifest)
                 else:
                     raise
         elif kind == "Secret":
             try:
                 api.read_namespaced_secret(name, ns)
+                logging.info(f"Secret '{name}' exists in '{ns}', replacing.")
                 api.replace_namespaced_secret(name, ns, manifest)
             except ApiException as e:
                 if e.status == 404:
+                    logging.info(f"Secret '{name}' does not exist, creating new Secret.")
                     api.create_namespaced_secret(ns, manifest)
                 else:
                     raise
         else:
-            # For other resource kinds, use the generic utility
+            logging.info(f"Applying resource kind '{kind}' with generic utility.")
             create_from_dict(client.ApiClient(), manifest, namespace=namespace)
     except Exception as e:
+        logging.error(f"Failed to apply {kind} '{name}' in '{ns}': {e}")
         raise
 
     await asyncio.sleep(0)
@@ -183,16 +194,61 @@ def compare_resources(expected, live):
 # --- Operator Handlers ---
 
 @kopf.on.create('training.dev', 'v1', 'labs')
-@kopf.on.update('training.dev', 'v1', 'labs')
-async def reconcile(spec, patch, name, namespace, body, **kwargs):
+async def create_lab(spec, patch, name, namespace, body, **kwargs):
     """
-    Main reconciliation handler for Lab resources.
-    Handles creation/update, applies manifests, and checks cluster state.
+    Handles creation of Lab resources.
+    Applies manifests to create resources in the cluster.
+    """
+    given_yaml = spec.get("given")
+    given_file = spec.get("givenFile")
+
+    # --- Handle given manifest ---
+    if not given_yaml and given_file:
+        try:
+            with open(given_file, "r") as f:
+                given_yaml = f.read()
+        except Exception as e:
+            patch.status["ready"] = False
+            patch.status["error"] = f"Failed to read givenFile: {e}"
+            return
+
+    if not given_yaml:
+        patch.status["ready"] = False
+        patch.status["error"] = "'given' or 'givenFile' field is required"
+        return
+
+    try:
+        given_docs = load_manifests(given_yaml)
+    except Exception as e:
+        patch.status["ready"] = False
+        patch.status["error"] = f"Failed to parse manifests: {e}"
+        return
+
+    # Only create resources here
+    for manifest in given_docs:
+        try:
+            await apply_manifest(manifest, namespace)
+        except Exception as e:
+            patch.status["ready"] = False
+            patch.status["error"] = f"Failed to apply given manifest: {e}"
+            return
+
+    # Then validate as usual
+    await validate_lab(spec, patch, name, namespace, body)
+
+@kopf.on.update('training.dev', 'v1', 'labs')
+@kopf.timer('training.dev', 'v1', 'labs', interval=5.0)
+async def validate_lab(spec, patch, name, namespace, body, expected_docs=None, **kwargs):
+    """
+    Validates Lab resources against the expected state.
+    Updates status and generates events based on the validation result.
     """
     expected = spec.get("expected")
     expected_ref = spec.get("expectedRef")
+    expected_file = spec.get("expectedFile")
 
-    # If plain YAML is provided, convert to Secret and patch Lab to use expectedRef
+    # --- Handle expected manifest ---
+    expected_yaml = None
     if expected and not expected_ref:
         secret_name = f"lab-{name}-expected"
         create_or_update_secret(secret_name, namespace, {"expected.yaml": expected})
@@ -215,33 +271,28 @@ async def reconcile(spec, patch, name, namespace, body, **kwargs):
         secret_name = expected_ref.get("secretName")
         key = expected_ref.get("key", "expected.yaml")
         expected_yaml = get_expected_yaml_from_secret(namespace, secret_name, key)
-    else:
-        patch.status["ready"] = False
-        patch.status["error"] = "Expected manifests not defined in spec.expected or spec.expectedRef"
-        return
-
-    # Parse and apply 'given' manifests
-    given_yaml = spec.get("given")
-    if not given_yaml:
-        patch.status["ready"] = False
-        patch.status["error"] = "'given' field is required"
-        return
-
-    try:
-        given_docs = load_manifests(given_yaml)
-        expected_docs = load_manifests(expected_yaml)
-    except Exception as e:
-        patch.status["ready"] = False
-        patch.status["error"] = f"Failed to parse manifests: {e}"
-        return
-
-    for manifest in given_docs:
+    elif expected_file:
         try:
-            await apply_manifest(manifest, namespace)
+            with open(expected_file, "r") as f:
+                expected_yaml = f.read()
         except Exception as e:
             patch.status["ready"] = False
-            patch.status["error"] = f"Failed to apply given manifest: {e}"
+            patch.status["error"] = f"Failed to read expectedFile: {e}"
             return
+    else:
+        patch.status["ready"] = False
+        patch.status["error"] = "Expected manifests not defined in spec.expected, spec.expectedFile, or spec.expectedRef"
+        return
+
+    if expected_yaml:
+        try:
+            expected_docs = load_manifests(expected_yaml)
+        except Exception as e:
+            patch.status["ready"] = False
+            patch.status["error"] = f"Failed to parse expected manifests: {e}"
+            return
+    else:
+        expected_docs = []
 
     # Validate expected manifests against live cluster
     all_match = True
@@ -265,19 +316,23 @@ async def reconcile(spec, patch, name, namespace, body, **kwargs):
     patch.status["ready"] = all_match
     if all_match:
         patch.status["message"] = "✅ The Lab is successfully fixed. Well done!"
-        patch.status.pop("error", None)
+        patch.status["error"] = None
+    else:
+        patch.status["message"] = None
+        patch.status["error"] = (
+            "❌ The Lab is not fixed yet.\n"
+            "Please ensure all resources match the expected configuration."
+        )
+
+    last_ready = body.get("status", {}).get("ready")
+    if all_match and last_ready is not True:
         kopf.event(
             body,
             type="Normal",
             reason="LabFixed",
             message="The Lab is successfully fixed."
         )
-    else:
-        patch.status.pop("message", None)
-        patch.status["error"] = (
-            "❌ The Lab is not fixed yet.\n"
-            "Please ensure all resources match the expected configuration."
-        )
+    elif not all_match and last_ready is not False:
         kopf.event(
             body,
             type="Warning",
@@ -328,6 +383,7 @@ async def delete_lab(spec, name, namespace, **kwargs):
         res_name = metadata.get("name")
         res_ns = metadata.get("namespace", namespace)
         try:
+            logging.info(f"Deleting {kind} '{res_name}' in namespace '{res_ns}'")
             if kind == "Pod":
                 core_v1.delete_namespaced_pod(res_name, res_ns)
             elif kind == "ConfigMap":
@@ -337,12 +393,15 @@ async def delete_lab(spec, name, namespace, **kwargs):
             # Add more kinds as needed
         except ApiException as e:
             if e.status != 404:
+                logging.error(f"Failed to delete {kind} '{res_name}' in '{res_ns}': {e}")
                 raise
 
     # Delete the lab's expected secret if it exists
     secret_name = f"lab-{name}-expected"
     try:
+        logging.info(f"Deleting expected Secret '{secret_name}' in namespace '{namespace}'")
         core_v1.delete_namespaced_secret(secret_name, namespace)
     except ApiException as e:
         if e.status != 404:
+            logging.error(f"Failed to delete expected Secret '{secret_name}' in '{namespace}': {e}")
             raise
