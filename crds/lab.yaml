@@ -15,6 +15,10 @@ spec:
             spec:
               type: object
               properties:
+                task:
+                  type: string
+                  description: |
+                    Task description for the user. This field is required.
                 given:
                   type: string
                   description: |
@@ -46,6 +50,8 @@ spec:
                   required:
                     - secretName
                     - key
+              required:
+                - task
               oneOf:
                 - required: ["expected"]
                 - required: ["expectedRef"]
@@ -68,6 +74,9 @@ spec:
       subresources:
         status: {}
       additionalPrinterColumns:
+        - name: Task
+          type: string
+          jsonPath: .spec.task
         - name: Ready
           type: boolean
           jsonPath: .status.ready

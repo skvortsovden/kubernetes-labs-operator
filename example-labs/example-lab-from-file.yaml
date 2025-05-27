@@ -3,7 +3,8 @@ kind: Lab
 metadata:
   name: example-lab-from-file
 spec:
-  givenFile: example-labs/given-busybox-pod.yaml
+  given: ""
+  task: "Create a Pod with BusyBox that sleeps for 3600 seconds with name busybox."
   expected: |
     apiVersion: v1
     kind: Pod

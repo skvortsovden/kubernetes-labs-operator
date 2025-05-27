@@ -208,6 +208,7 @@ async def create_lab(spec, patch, name, namespace, body, **kwargs):
             with open(given_file, "r") as f:
                 given_yaml = f.read()
         except Exception as e:
+            logging.error(f"Failed to read givenFile: {e}", exc_info=True)
             patch.status["ready"] = False
             patch.status["error"] = f"Failed to read givenFile: {e}"
             return
@@ -220,6 +221,7 @@ async def create_lab(spec, patch, name, namespace, body, **kwargs):
     try:
         given_docs = load_manifests(given_yaml)
     except Exception as e:
+        logging.error(f"Failed to parse manifests: {e}", exc_info=True)
         patch.status["ready"] = False
         patch.status["error"] = f"Failed to parse manifests: {e}"
         return
@@ -229,6 +231,7 @@ async def create_lab(spec, patch, name, namespace, body, **kwargs):
         try:
             await apply_manifest(manifest, namespace)
         except Exception as e:
+            logging.error(f"Failed to apply given manifest: {e}", exc_info=True)
             patch.status["ready"] = False
             patch.status["error"] = f"Failed to apply given manifest: {e}"
             return
