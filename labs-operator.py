@@ -284,9 +284,21 @@ async def validate_lab(spec, patch, name, namespace, body, expected_docs=None, *
                 expected["metadata"]["name"],
                 expected["metadata"].get("namespace", namespace)
             )
+        except ApiException as e:
+            if e.status == 404:
+                patch.status["ready"] = False
+                patch.status["error"] = (
+                    f"Resource {expected['kind']}/{expected['metadata']['name']} not found in namespace "
+                    f"{expected['metadata'].get('namespace', namespace)}"
+                )
+                return
+            else:
+                patch.status["ready"] = False
+                patch.status["error"] = f"Failed to get live resource: {e.reason}"
+                return
         except Exception as e:
             patch.status["ready"] = False
-            patch.status["error"] = f"Failed to get live resource: {e}"
+            patch.status["error"] = f"Failed to get live resource: {str(e)}"
             return
 
         if not compare_resources(expected, live):
