@@ -86,10 +86,10 @@ You can run the operator directly on your machine, connected to a Minikube clust
             command: ["sleep", "3600"]
     ```
 
-    Save as `example-lab.yaml` and apply:
+    Save as `example-labs/example-lab` and apply:
 
     ```bash
-    kubectl apply -f example-lab.yaml
+    kubectl apply -f example-labs/example-lab
     ```
 
 ---

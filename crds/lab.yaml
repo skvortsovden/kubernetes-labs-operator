@@ -19,11 +19,19 @@ spec:
                   type: string
                   description: |
                     YAML manifest(s) defining the "given" resource(s) for the lab.
+                givenFile:
+                  type: string
+                  description: |
+                    Path to a file containing the "given" YAML manifest(s) for the lab.
                 expected:
                   type: string
                   description: |
                     YAML manifest(s) defining the expected resource(s) for the lab.
                     Provided initially by the teacher; replaced by expectedRef by the operator.
+                expectedFile:
+                  type: string
+                  description: |
+                    Path to a file containing the expected YAML manifest(s) for the lab.
                 expectedRef:
                   type: object
                   description: |
@@ -41,8 +49,10 @@ spec:
               oneOf:
                 - required: ["expected"]
                 - required: ["expectedRef"]
-              required:
-                - given
+                - required: ["expectedFile"]
+              anyOf:
+                - required: ["given"]
+                - required: ["givenFile"]
             status:
               type: object
               properties:
@@ -52,8 +62,21 @@ spec:
                 error:
                   type: string
                   description: Error message if validation failed.
+                message:
+                  type: string
+                  description: A human-readable message indicating the status of the lab.
       subresources:
         status: {}
+      additionalPrinterColumns:
+        - name: Ready
+          type: boolean
+          jsonPath: .status.ready
+        - name: Message
+          type: string
+          jsonPath: .status.message
+        - name: Error
+          type: string
+          jsonPath: .status.error
   scope: Namespaced
   names:
     plural: labs
