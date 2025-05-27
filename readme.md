@@ -4,7 +4,7 @@ This operator helps run **Kubernetes lab exercises** by applying given manifests
 
 ---
 
-## How to run it cocally using Minikube and Python
+## How to run it locally using Minikube and Python
 
 You can run the operator directly on your machine, connected to a Minikube cluster.
 
@@ -56,6 +56,9 @@ You can run the operator directly on your machine, connected to a Minikube clust
 
 6. **Create and apply a Lab resource**
 
+    You can now use either inline YAML or reference external YAML files for the `given` and `expected` fields.
+
+    **Example using inline YAML:**
     ```yaml
     apiVersion: training.dev/v1
     kind: Lab
@@ -86,11 +89,37 @@ You can run the operator directly on your machine, connected to a Minikube clust
             command: ["sleep", "3600"]
     ```
 
-    Save as `example-labs/example-lab` and apply:
+    **Example using external YAML files:**
+    ```yaml
+    apiVersion: training.dev/v1
+    kind: Lab
+    metadata:
+      name: example-lab-from-file
+    spec:
+      givenFile: example-labs/given.yaml
+      expectedFile: example-labs/expected.yaml
+    ```
+
+    Save as `example-labs/example-lab.yaml` and apply:
 
     ```bash
-    kubectl apply -f example-labs/example-lab
+    kubectl apply -f example-labs/example-lab.yaml
     ```
+
+---
+
+## Features
+
+- Supports both inline YAML (`given`, `expected`) and referencing external YAML files (`givenFile`, `expectedFile`) for lab definitions.
+- Applies resources in `spec.given` or from `spec.givenFile` to the cluster.
+- Converts `spec.expected` or `spec.expectedFile` to a Secret and patches the Lab to use `expectedRef` (to prevent exposing the solution directly to the user and ensure consistent handling).
+- Verifies the live cluster state matches the expected manifests (using a subset/deep comparison, ignoring extra fields set by Kubernetes).
+- Updates `.status.ready`, `.status.message`, and `.status.error` accordingly.
+- Emits Kubernetes events:
+  * **While initializing:** "Please wait, the Lab is initializing and preparing resources."
+  * **When fixed:** "The Lab is successfully fixed."
+  * **When not fixed:** "The cluster state does not match the expected manifests. Keep looking for the issue and try again."
+- When the Lab is deleted, all resources from `given`/`givenFile` and `expected`/`expectedFile` are deleted, including the operator-created Secret.
 
 ---
 
@@ -105,7 +134,7 @@ sequenceDiagram
     User->>Kubernetes: Create Lab CR (kubectl apply)
     Kubernetes->>Operator: Triggers @on.create handler
 
-    Operator->>Operator: Parse 'given' or 'givenFile'
+    Operator->>Operator: Parse 'given', 'givenFile'
     Operator->>Operator: Create resources (apply_manifest)
     Operator->>Operator: Validate cluster state (validate_lab)
     Operator->>Kubernetes: Update Lab status (ready, message, error)
@@ -121,21 +150,11 @@ sequenceDiagram
 
     User->>Kubernetes: Delete Lab CR (kubectl delete)
     Kubernetes->>Operator: Triggers @on.delete handler
-    Operator->>Operator: Parse manifests from 'given' and 'expected'
+    Operator->>Operator: Parse manifests from 'given', 'givenFile', 'expected', 'expectedFile'
     Operator->>Kubernetes: Delete resources (Pod, ConfigMap, Secret, etc.)
     Operator->>Kubernetes: Wait for resources to be deleted
     Operator->>Kubernetes: Delete expected Secret (if exists)
 ```
-
-* Applies resources in `spec.given` to the cluster.
-* Converts `spec.expected` to a Secret and patches the Lab to use `expectedRef` (for security and consistency).
-* Verifies the live cluster state matches the expected manifests (using a subset/deep comparison, ignoring extra fields set by Kubernetes).
-* Updates `.status.ready`, `.status.message`, and `.status.error` accordingly.
-* Emits Kubernetes events:
-  * **While initializing:** "Please wait, the Lab is initializing and preparing resources."
-  * **When fixed:** "The Lab is successfully fixed."
-  * **When not fixed:** "The cluster state does not match the expected manifests. Keep looking for the issue and try again."
-* When the Lab is deleted, all resources from `given` and `expected` are deleted, including the operator-created Secret.
 
 ---
 
@@ -151,12 +170,11 @@ sequenceDiagram
     - **Status:** `.status.ready`, `.status.message`, `.status.error`
     - **Events:** For initialization, success, or mismatch hints
 
-
 ### Notes
 
 * The operator uses in-cluster config by default, but falls back to your local kubeconfig if run outside a cluster.
 * You don’t need Docker or container rebuilds in this mode.
 * Just create/update `Lab` CRs via `kubectl` as usual; the locally running operator will reconcile them.
-* The `given` and `expected` blocks are shown nicely in the Lab's status and events for easy debugging.
+* The `given`, `givenFile`, `expected`, and `expectedFile` blocks are supported for flexible lab definitions.
 
 ---
