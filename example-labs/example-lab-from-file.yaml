@@ -1,0 +1,17 @@
+apiVersion: training.dev/v1
+kind: Lab
+metadata:
+  name: example-lab-from-file
+spec:
+  givenFile: example-labs/given-busybox-pod.yaml
+  expected: |
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: busybox
+      namespace: default
+    spec:
+      containers:
+      - name: busybox-labs
+        image: busybox
+        command: ["sleep", "3600"]
