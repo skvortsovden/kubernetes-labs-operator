@@ -3,11 +3,10 @@ kind: Lab
 metadata:
   name: example-lab-from-file
 spec:
-  givenFile: given-busybox-pod.yaml
+  given: ""
   task: |
-    Fix the name of the container in the Pod definition.
     Create a Pod with the container image busybox and the name busybox-labs.
-    It should sleep for 3600 seconds.
+    The container should sleep for 3600 seconds.
   expected: |
     apiVersion: v1
     kind: Pod
