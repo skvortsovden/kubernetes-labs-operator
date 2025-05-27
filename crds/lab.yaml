@@ -50,7 +50,7 @@ spec:
                 - required: ["expected"]
                 - required: ["expectedRef"]
                 - required: ["expectedFile"]
-              anyOf:
+              oneOf:
                 - required: ["given"]
                 - required: ["givenFile"]
             status:
