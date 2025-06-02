@@ -71,6 +71,21 @@ spec:
                 message:
                   type: string
                   description: A human-readable message indicating the status of the lab.
+                resources:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      kind:
+                        type: string
+                      name:
+                        type: string
+                      namespace:
+                        type: string
+                      status:
+                        type: string
+                      error:
+                        type: string
       subresources:
         status: {}
       additionalPrinterColumns:

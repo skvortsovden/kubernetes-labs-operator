@@ -105,7 +105,7 @@ async def apply_manifest(manifest, namespace):
 def get_live_resource(kind, api_version, name, namespace):
     """
     Fetches the live resource from the cluster.
-    Supports Pod, ConfigMap, and Secret.
+    Supports Pod, ConfigMap, Secret, PersistentVolumeClaim, and Service.
     """
     if kind == "Pod":
         return core_v1.read_namespaced_pod(name, namespace).to_dict()
@@ -113,6 +113,10 @@ def get_live_resource(kind, api_version, name, namespace):
         return core_v1.read_namespaced_config_map(name, namespace).to_dict()
     elif kind == "Secret":
         return core_v1.read_namespaced_secret(name, namespace).to_dict()
+    elif kind == "PersistentVolumeClaim":
+        return core_v1.read_namespaced_persistent_volume_claim(name, namespace).to_dict()
+    elif kind == "Service":
+        return core_v1.read_namespaced_service(name, namespace).to_dict()
     else:
         raise NotImplementedError(f"get_live_resource does not support kind: {kind}")
 
@@ -223,6 +227,8 @@ async def validate_lab(spec, patch, name, namespace, body, expected_docs=None, *
     Validates Lab resources against the expected state.
     Updates status and generates events based on the validation result.
     """
+    logging.info("validate_lab running for %s", name)
+    
     expected = spec.get("expected")
     expected_ref = spec.get("expectedRef")
     expected_file = spec.get("expectedFile")
@@ -276,7 +282,16 @@ async def validate_lab(spec, patch, name, namespace, body, expected_docs=None, *
 
     # Validate expected manifests against live cluster
     all_match = True
+    resource_statuses = []
+
     for expected in expected_docs:
+        res_status = {
+            "kind": expected.get("kind"),
+            "name": expected.get("metadata", {}).get("name"),
+            "namespace": expected.get("metadata", {}).get("namespace", namespace),
+            "status": "",  # always present
+            "error": None, # always present
+        }
         try:
             live = get_live_resource(
                 expected["kind"],
@@ -284,27 +299,36 @@ async def validate_lab(spec, patch, name, namespace, body, expected_docs=None, *
                 expected["metadata"]["name"],
                 expected["metadata"].get("namespace", namespace)
             )
+            if compare_resources(expected, live):
+                res_status["status"] = "Ready"
+            else:
+                res_status["status"] = "NotMatching"
+                all_match = False
         except ApiException as e:
             if e.status == 404:
-                patch.status["ready"] = False
-                patch.status["error"] = (
+                res_status["status"] = "NotFound"
+                res_status["error"] = (
                     f"Resource {expected['kind']}/{expected['metadata']['name']} not found in namespace "
                     f"{expected['metadata'].get('namespace', namespace)}"
                 )
-                return
+                all_match = False
             else:
-                patch.status["ready"] = False
-                patch.status["error"] = f"Failed to get live resource: {e.reason}"
-                return
+                res_status["status"] = "Error"
+                res_status["error"] = f"Failed to get live resource: {e.reason}"
+                all_match = False
         except Exception as e:
-            patch.status["ready"] = False
-            patch.status["error"] = f"Failed to get live resource: {str(e)}"
-            return
-
-        if not compare_resources(expected, live):
+            res_status["status"] = "Error"
+            res_status["error"] = f"Failed to get live resource: {str(e)}"
             all_match = False
-            break
 
+        resource_statuses.append(res_status)
+
+    # Before setting patch.status["resources"]:
+    for res_status in resource_statuses:
+        if "error" not in res_status:
+            res_status["error"] = None
+    resource_statuses.sort(key=lambda r: (r["kind"], r["namespace"], r["name"]))
+    patch.status["resources"] = resource_statuses
     patch.status["ready"] = all_match
     if all_match:
         patch.status["message"] = "✅ The Lab is successfully fixed. Well done!"
