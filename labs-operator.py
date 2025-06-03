@@ -9,6 +9,8 @@ import os
 import logging
 import re
 
+logging.getLogger("kopf.objects").setLevel(logging.ERROR)
+
 # Load Kubernetes config (in-cluster or local)
 try:
     config.load_incluster_config()
@@ -19,7 +21,7 @@ core_v1 = client.CoreV1Api()
 
 # --- Utility Functions ---
 
-def create_or_update_secret(name, namespace, data_dict):
+async def create_or_update_secret(name, namespace, data_dict):
     """
     Create or update a Kubernetes Secret with the given data.
     """
@@ -28,12 +30,13 @@ def create_or_update_secret(name, namespace, data_dict):
         data={k: base64.b64encode(v.encode()).decode() for k, v in data_dict.items()},
         type="Opaque"
     )
+    loop = asyncio.get_event_loop()
     try:
-        core_v1.read_namespaced_secret(name, namespace)
-        core_v1.replace_namespaced_secret(name, namespace, secret)
+        await loop.run_in_executor(None, core_v1.read_namespaced_secret, name, namespace)
+        await loop.run_in_executor(None, core_v1.replace_namespaced_secret, name, namespace, secret)
     except ApiException as e:
         if e.status == 404:
-            core_v1.create_namespaced_secret(namespace, secret)
+            await loop.run_in_executor(None, core_v1.create_namespaced_secret, namespace, secret)
         else:
             raise
 
@@ -312,15 +315,7 @@ async def validate_lab(spec, patch, name, namespace, body, expected_docs=None, *
     # --- Handle expected manifest ---
     expected_yaml = None
     if expected and not expected_ref:
-        secret_name = f"lab-{name}-expected"
-        create_or_update_secret(secret_name, namespace, {"expected.yaml": expected})
-
-        patch.spec["expected"] = None
-        patch.spec["expectedRef"] = {
-            "secretName": secret_name,
-            "key": "expected.yaml"
-        }
-
+        # Fire Initializing event first
         kopf.event(
             body,
             type="Normal",
@@ -328,7 +323,24 @@ async def validate_lab(spec, patch, name, namespace, body, expected_docs=None, *
             message="Please wait, the Lab is initializing and preparing resources."
         )
 
+        secret_name = f"lab-{name}-expected"
+        await create_or_update_secret(secret_name, namespace, {"expected.yaml": expected})
+
+        patch.spec["expected"] = None
+        patch.spec["expectedRef"] = {
+            "secretName": secret_name,
+            "key": "expected.yaml"
+        }
+
         expected_yaml = expected
+
+        # Fire LabReady event after Secret is created and spec is patched
+        kopf.event(
+            body,
+            type="Normal",
+            reason="LabReady",
+            message="The Lab is ready to be fixed. Enjoy!"
+        )
     elif expected_ref:
         secret_name = expected_ref.get("secretName")
         key = expected_ref.get("key", "expected.yaml")
@@ -375,8 +387,6 @@ async def validate_lab(spec, patch, name, namespace, body, expected_docs=None, *
                 expected["metadata"]["name"],
                 expected["metadata"].get("namespace", namespace)
             )
-            # logging.debug(f"[validate_lab] Comparing expected: {yaml.dump(expected)}")
-            # logging.debug(f"[validate_lab] With live: {yaml.dump(live)}")
             if compare_resources(expected, live):
                 res_status["status"] = "Ready"
             else:
@@ -413,7 +423,9 @@ async def validate_lab(spec, patch, name, namespace, body, expected_docs=None, *
         if "error" not in res_status:
             res_status["error"] = None
     resource_statuses.sort(key=lambda r: (r["kind"], r["namespace"], r["name"]))
-    patch.status["resources"] = resource_statuses
+    current = body.get("status", {}).get("resources")
+    if current != resource_statuses:
+        patch.status["resources"] = resource_statuses
     patch.status["ready"] = all_match
     if all_match:
         patch.status["message"] = "✅ The Lab is successfully fixed. Well done!"
@@ -438,7 +450,7 @@ async def validate_lab(spec, patch, name, namespace, body, expected_docs=None, *
             body,
             type="Warning",
             reason="LabNotFixed",
-            message="The cluster state does not match the expected manifests. Keep looking for the issue."
+            message="The Lab's current state does not match the expected state. Keep looking for the issue."
         )
 
 @kopf.on.delete('training.dev', 'v1', 'labs')
@@ -491,6 +503,10 @@ async def delete_lab(spec, name, namespace, **kwargs):
                 core_v1.delete_namespaced_config_map(res_name, res_ns)
             elif kind == "Secret":
                 core_v1.delete_namespaced_secret(res_name, res_ns)
+            elif kind == "Service":
+                core_v1.delete_namespaced_service(res_name, res_ns)
+            elif kind == "PersistentVolumeClaim":
+                core_v1.delete_namespaced_persistent_volume_claim(res_name, res_ns)
             # Add more kinds as needed
         except ApiException as e:
             if e.status != 404:
