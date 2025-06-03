@@ -86,6 +86,10 @@ spec:
                         type: string
                       error:
                         type: string
+                      mismatches:
+                        type: array
+                        items:
+                          type: string
       subresources:
         status: {}
       additionalPrinterColumns:

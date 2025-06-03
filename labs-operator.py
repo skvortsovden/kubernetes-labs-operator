@@ -7,6 +7,7 @@ import asyncio
 from kubernetes.utils import create_from_dict
 import os
 import logging
+import re
 
 # Load Kubernetes config (in-cluster or local)
 try:
@@ -108,32 +109,43 @@ def get_live_resource(kind, api_version, name, namespace):
     Supports Pod, ConfigMap, Secret, PersistentVolumeClaim, and Service.
     """
     if kind == "Pod":
-        return core_v1.read_namespaced_pod(name, namespace).to_dict()
+        return dict_keys_to_camel(core_v1.read_namespaced_pod(name, namespace).to_dict())
     elif kind == "ConfigMap":
-        return core_v1.read_namespaced_config_map(name, namespace).to_dict()
+        return dict_keys_to_camel(core_v1.read_namespaced_config_map(name, namespace).to_dict())
     elif kind == "Secret":
-        return core_v1.read_namespaced_secret(name, namespace).to_dict()
+        return dict_keys_to_camel(core_v1.read_namespaced_secret(name, namespace).to_dict())
     elif kind == "PersistentVolumeClaim":
-        return core_v1.read_namespaced_persistent_volume_claim(name, namespace).to_dict()
+        return dict_keys_to_camel(core_v1.read_namespaced_persistent_volume_claim(name, namespace).to_dict())
     elif kind == "Service":
-        return core_v1.read_namespaced_service(name, namespace).to_dict()
+        return dict_keys_to_camel(core_v1.read_namespaced_service(name, namespace).to_dict())
     else:
         raise NotImplementedError(f"get_live_resource does not support kind: {kind}")
 
-def is_subset(expected, live):
+def is_subset(expected, live, path=""):
     """
     Recursively checks if all fields in expected are present and equal in live.
+    For lists, checks that each expected element is present somewhere in the live list.
+    Logs mismatches for debugging.
     """
     if isinstance(expected, dict) and isinstance(live, dict):
         for k, v in expected.items():
-            if k not in live or not is_subset(v, live[k]):
+            sub_path = f"{path}.{k}" if path else k
+            if k not in live:
+                logging.debug(f"[is_subset] Key '{sub_path}' missing in live")
+                return False
+            if not is_subset(v, live[k], sub_path):
+                logging.debug(f"[is_subset] Value mismatch at '{sub_path}': expected={v}, live={live[k]}")
                 return False
         return True
     elif isinstance(expected, list) and isinstance(live, list):
-        if len(expected) != len(live):
-            return False
-        return all(is_subset(e, l) for e, l in zip(expected, live))
+        for idx, e in enumerate(expected):
+            if not any(is_subset(e, l, f"{path}[{idx}]") for l in live):
+                logging.debug(f"[is_subset] List element at '{path}[{idx}]' not found in live")
+                return False
+        return True
     else:
+        if expected != live:
+            logging.debug(f"[is_subset] Value mismatch at '{path}': expected={expected}, live={live}")
         return expected == live
 
 def compare_resources(expected, live):
@@ -171,6 +183,70 @@ def compare_resources(expected, live):
             filter_metadata(expected.get("metadata", {})) == filter_metadata(live.get("metadata", {})) and
             is_subset(expected.get("spec", {}), live.get("spec", {}))
         )
+
+def find_mismatches(expected, live, path=""):
+    """
+    Recursively find fields present in expected but missing in live.
+    Returns a list of property paths that are missing in the live resource.
+    Adds debug logging for each comparison step.
+    """
+    mismatches = []
+    if isinstance(expected, dict) and isinstance(live, dict):
+        for k, v in expected.items():
+            if k == "apiVersion":
+                continue  # Ignore apiVersion
+            sub_path = f"{path}.{k}" if path else k
+            if k not in live:
+                logging.debug(f"[find_mismatches] {sub_path} missing in live")
+                mismatches.append(f"{sub_path} (missing)")
+            else:
+                logging.debug(f"[find_mismatches] {sub_path} found, recursing")
+                mismatches.extend(find_mismatches(v, live[k], sub_path))
+    elif isinstance(expected, list) and isinstance(live, list):
+        if path.endswith("volumeMounts"):
+            expected_mounts = {(m.get("mountPath"), m.get("name")) for m in expected}
+            live_mounts = {(m.get("mountPath"), m.get("name")) for m in live}
+            for mount in expected_mounts:
+                if mount not in live_mounts:
+                    logging.debug(f"[find_mismatches] {path} missing mount: {mount}")
+                    mismatches.append(f"{path} (missing mount: {mount})")
+        elif path.endswith("volumes"):
+            expected_vols = {v.get("name"): v for v in expected}
+            live_vols = {v.get("name"): v for v in live}
+            for name, exp_vol in expected_vols.items():
+                if name not in live_vols:
+                    logging.debug(f"[find_mismatches] {path} missing volume: {name}")
+                    mismatches.append(f"{path} (missing volume: {name})")
+                else:
+                    if "persistentVolumeClaim" in exp_vol:
+                        if "persistentVolumeClaim" not in live_vols[name]:
+                            logging.debug(f"[find_mismatches] {path}.{name}.persistentVolumeClaim missing in live")
+                            mismatches.append(f"{path}.{name}.persistentVolumeClaim (missing)")
+        else:
+            for i, e in enumerate(expected):
+                if i < len(live):
+                    logging.debug(f"[find_mismatches] {path}[{i}] recursing")
+                    mismatches.extend(find_mismatches(e, live[i], f"{path}[{i}]"))
+                else:
+                    logging.debug(f"[find_mismatches] {path}[{i}] missing in live")
+                    mismatches.append(f"{path}[{i}] (missing)")
+    return mismatches
+
+def to_camel_case(s):
+    parts = s.split('_')
+    return parts[0] + ''.join(word.capitalize() for word in parts[1:])
+
+def dict_keys_to_camel(obj):
+    if isinstance(obj, dict):
+        new = {}
+        for k, v in obj.items():
+            new_k = to_camel_case(k)
+            new[new_k] = dict_keys_to_camel(v)
+        return new
+    elif isinstance(obj, list):
+        return [dict_keys_to_camel(i) for i in obj]
+    else:
+        return obj
 
 # --- Operator Handlers ---
 
@@ -289,8 +365,8 @@ async def validate_lab(spec, patch, name, namespace, body, expected_docs=None, *
             "kind": expected.get("kind"),
             "name": expected.get("metadata", {}).get("name"),
             "namespace": expected.get("metadata", {}).get("namespace", namespace),
-            "status": "",  # always present
-            "error": None, # always present
+            "status": "",
+            "error": None,
         }
         try:
             live = get_live_resource(
@@ -299,11 +375,20 @@ async def validate_lab(spec, patch, name, namespace, body, expected_docs=None, *
                 expected["metadata"]["name"],
                 expected["metadata"].get("namespace", namespace)
             )
+            # logging.debug(f"[validate_lab] Comparing expected: {yaml.dump(expected)}")
+            # logging.debug(f"[validate_lab] With live: {yaml.dump(live)}")
             if compare_resources(expected, live):
                 res_status["status"] = "Ready"
             else:
                 res_status["status"] = "NotMatching"
-                all_match = False
+                mismatches = find_mismatches(expected, live)
+                logging.debug(f"[validate_lab] Mismatches for {res_status['kind']} {res_status['name']}: {mismatches}")
+                if not mismatches:
+                    res_status["status"] = "Ready"
+                else:
+                    res_status["status"] = "NotMatching"
+                    res_status["mismatches"] = mismatches
+                    all_match = False
         except ApiException as e:
             if e.status == 404:
                 res_status["status"] = "NotFound"
