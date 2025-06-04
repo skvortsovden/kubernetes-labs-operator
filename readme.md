@@ -158,6 +158,71 @@ sequenceDiagram
 
 ---
 
+## System Architecture
+
+```mermaid
+flowchart TD
+
+  subgraph User
+    U[User - kubectl]
+  end
+
+  subgraph "Control Plane"
+    API[Kube API Server]
+    ETCD[etcd - persistent store]
+    CM[Controller Manager]
+    SCH[Scheduler]
+  end
+
+  subgraph "Custom Operator Domain"
+    CRD[Lab CRD - CustomResourceDefinition]
+    CR[Lab CR - Custom Resource]
+    OP[Lab Operator - controller]
+    RES[Managed Resources Pod, PVC, Service, etc.]
+  end
+
+  %% User actions
+  U -->|kubectl apply -f lab-crd.yaml| API
+  U -->|kubectl apply -f lab.yaml| API
+  U -->|kubectl get/describe lab| API
+
+  %% CRD registration and CR creation
+  API -->|stores schema| ETCD
+  API -->|validates against CRD| CR
+  API -->|stores CR| ETCD
+  CR -->|conforms to| CRD
+
+  %% Operator actions
+  OP -->|watches for CR events via API| CR
+  OP -->|uses REST API| API
+  OP -->|creates/updates/deletes| RES
+  OP -->|updates status| CR
+
+  %% Control plane managing native resources
+  API -->|notifies| CM
+  CM -->|reconciles state| RES
+  CM -->|stores updates| ETCD
+
+  RES -->|scheduled by| SCH
+  SCH -->|binds Pods to Nodes| RES
+
+  %% Data storage
+  API -->|persists all objects| ETCD
+
+```
+
+**Legend:**
+- **User:** Uses `kubectl` to interact with the Kubernetes API server (e.g., apply Lab CRDs/CRs, get status).
+- **Kube API Server:** Central API endpoint for all cluster operations; validates, stores, and serves resources.
+- **etcd:** Persistent storage for all cluster state, including CRDs and CRs.
+- **Controller Manager:** Reconciles desired and actual state for native resources.
+- **Scheduler:** Assigns Pods to Nodes.
+- **Lab CRD:** CustomResourceDefinition that defines the schema for Lab resources.
+- **Lab CR:** A custom Lab resource instance representing a lab exercise.
+- **Lab Operator:** Watches Lab CRs, manages lifecycle of related resources, updates status, and emits events.
+- **Managed Resources:** Kubernetes objects (Pods, PVCs, Services, ConfigMaps, Secrets, etc.) created and managed by the operator.
+- **RBAC/ServiceAccount:** Provides the operator with necessary permissions to watch and modify resources.
+
 ## Build and run with Docker
 
 1. Build the Docker image:
@@ -181,6 +246,50 @@ sequenceDiagram
     podman run -p 8080:8080 -v ~/.kube:/root/.kube:Z kubernetes-labs-operator
     ```
 3. Open your browser and navigate to `http://localhost:8080`.
+
+## How to deploy the operator on your cluster
+
+You can deploy the operator as a Kubernetes Deployment using the provided `deployment.yaml` manifest.
+
+### Prerequisites
+
+* Your cluster is running and `kubectl` is configured to access it.
+* The CRD for the Lab resource is installed:
+    ```bash
+    kubectl apply -f crds/lab.yaml
+    ```
+
+### Steps
+
+1. **Deploy the operator and its RBAC**
+
+    ```bash
+    kubectl apply -f deployment.yaml
+    ```
+
+    This will create:
+    - A Deployment running the operator container (using the image specified in the manifest)
+    - A ServiceAccount for the operator
+    - ClusterRole and ClusterRoleBinding for necessary permissions
+
+2. **Verify the operator is running**
+
+    ```bash
+    kubectl get pods -l app=kubernetes-labs-operator
+    kubectl logs deployment/kubernetes-labs-operator
+    ```
+
+3. **Create and apply a Lab resource**
+
+    You can now create `Lab` resources as described above. The operator will watch for them and reconcile as expected.
+
+---
+
+**Note:**  
+- The operator image is specified in `deployment.yaml` (e.g., `ghcr.io/skvortsovden/kubernetes-labs-operator:latest`).  
+- If you push a new image, update the tag in `deployment.yaml` and re-apply it.
+
+---
 
 ## Troubleshooting
 
