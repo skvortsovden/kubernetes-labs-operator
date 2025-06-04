@@ -256,6 +256,44 @@ def dict_keys_to_camel(obj):
     else:
         return obj
 
+def is_resource_ready(kind, live):
+    """
+    Returns True if the resource is considered 'ready' or 'running'.
+    Extend this function for more resource kinds as needed.
+    """
+    if kind == "Pod":
+        status = live.get("status", {})
+        phase = status.get("phase")
+        if phase != "Running":
+            return False
+        container_statuses = status.get("containerStatuses", [])
+        if not container_statuses:
+            return False
+        for cs in container_statuses:
+            # Check if container is ready
+            if not cs.get("ready", False):
+                return False
+            # Check for CrashLoopBackOff or Error
+            state = cs.get("state", {})
+            if "waiting" in state:
+                reason = state["waiting"].get("reason", "")
+                if reason in ("CrashLoopBackOff", "Error"):
+                    return False
+            if "terminated" in state:
+                return False
+        return True
+    elif kind == "Service":
+        return True
+    elif kind == "ConfigMap":
+        return True
+    elif kind == "Secret":
+        return True
+    elif kind == "PersistentVolumeClaim":
+        phase = live.get("status", {}).get("phase")
+        return phase == "Bound"
+    # Add more resource kinds and their readiness logic as needed
+    return True  # Default: consider resource ready if it exists
+
 # --- Operator Handlers ---
 
 @kopf.on.create('training.dev', 'v1', 'labs')
@@ -393,13 +431,23 @@ async def validate_lab(spec, patch, name, namespace, body, expected_docs=None, *
                 expected["metadata"].get("namespace", namespace)
             )
             if compare_resources(expected, live):
-                res_status["status"] = "Ready"
+                if is_resource_ready(expected["kind"], live):
+                    res_status["status"] = "Ready"
+                else:
+                    res_status["status"] = "NotReady"
+                    res_status["error"] = f"{expected['kind']} is not ready"
+                    all_match = False
             else:
                 res_status["status"] = "NotMatching"
                 mismatches = find_mismatches(expected, live)
                 logging.debug(f"[validate_lab] Mismatches for {res_status['kind']} {res_status['name']}: {mismatches}")
                 if not mismatches:
-                    res_status["status"] = "Ready"
+                    if is_resource_ready(expected["kind"], live):
+                        res_status["status"] = "Ready"
+                    else:
+                        res_status["status"] = "NotReady"
+                        res_status["error"] = f"{expected['kind']} is not ready"
+                        all_match = False
                 else:
                     res_status["status"] = "NotMatching"
                     res_status["mismatches"] = mismatches
