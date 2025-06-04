@@ -203,8 +203,13 @@ def find_mismatches(expected, live, path=""):
                 logging.debug(f"[find_mismatches] {sub_path} missing in live")
                 mismatches.append(f"{sub_path} (missing)")
             else:
-                logging.debug(f"[find_mismatches] {sub_path} found, recursing")
-                mismatches.extend(find_mismatches(v, live[k], sub_path))
+                if isinstance(v, (dict, list)) and isinstance(live[k], type(v)):
+                    logging.debug(f"[find_mismatches] {sub_path} found, recursing")
+                    mismatches.extend(find_mismatches(v, live[k], sub_path))
+                else:
+                    if v != live[k]:
+                        logging.debug(f"[find_mismatches] {sub_path} value mismatch: expected={v}, live={live[k]}")
+                        mismatches.append(f"{sub_path} (value mismatch: expected={v}, live={live[k]})")
     elif isinstance(expected, list) and isinstance(live, list):
         if path.endswith("volumeMounts"):
             expected_mounts = {(m.get("mountPath"), m.get("name")) for m in expected}
