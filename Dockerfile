@@ -3,17 +3,11 @@ LABEL org.opencontainers.image.source="https://github.com/${GITHUB_REPOSITORY}"
 
 WORKDIR /app
 
-# Install system dependencies (if needed)
-RUN apt-get update && apt-get install -y gcc
-
-# Copy your code
-COPY labs-operator.py /app/labs-operator.py
-
-# Copy requirements.txt if you have one, otherwise install directly
-COPY requirements.txt /app/requirements.txt
-
-# Install Python dependencies
+# Copy requirements and install dependencies first for better caching
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Set the entrypoint
+# Copy only the application code
+COPY labs-operator.py .
+
 ENTRYPOINT ["python", "labs-operator.py"]
