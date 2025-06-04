@@ -1,4 +1,5 @@
 FROM python:3.9-slim
+LABEL org.opencontainers.image.source="https://github.com/${GITHUB_REPOSITORY}"
 
 WORKDIR /app
 
