@@ -158,6 +158,30 @@ sequenceDiagram
 
 ---
 
+## Build and run with Docker
+
+1. Build the Docker image:
+    ```bash
+    docker build -t kubernetes-labs-operator .
+    ```
+2. Run the container:
+    ```bash
+    docker run -p 8080:8080 -v ~/.kube:/root/.kube kubernetes-labs-operator
+    ```
+3. Open your browser and navigate to `http://localhost:8080`.
+
+## Build and run with Podman
+
+1. Build the image:
+    ```bash
+    podman build -t kubernetes-labs-operator .
+    ```
+2. Run the container:
+    ```bash
+    podman run -p 8080:8080 -v ~/.kube:/root/.kube:Z kubernetes-labs-operator
+    ```
+3. Open your browser and navigate to `http://localhost:8080`.
+
 ## Troubleshooting
 
 * Inspect Lab status and events:
